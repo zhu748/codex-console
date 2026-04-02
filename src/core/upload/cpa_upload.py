@@ -19,6 +19,10 @@ from ..timezone_utils import utcnow_naive
 logger = logging.getLogger(__name__)
 
 
+_CPA_SUCCESS_STATUS_CODES = {200, 201, 202, 204}
+_CPA_RAW_JSON_FALLBACK_STATUS_CODES = {400, 404, 405, 415, 422}
+
+
 def _normalize_cpa_auth_files_url(api_url: str) -> str:
     """将用户填写的 CPA 地址规范化为 auth-files 接口地址。"""
     normalized = (api_url or "").strip().rstrip("/")
@@ -57,6 +61,10 @@ def _extract_cpa_error(response) -> str:
     except Exception:
         error_msg = f"{error_msg} - {response.text[:200]}"
     return error_msg
+
+
+def _is_cpa_success_response(response) -> bool:
+    return getattr(response, "status_code", None) in _CPA_SUCCESS_STATUS_CODES
 
 
 def _post_cpa_auth_file_multipart(upload_url: str, filename: str, file_content: bytes, api_token: str):
@@ -159,10 +167,10 @@ def upload_to_cpa(
             effective_token,
         )
 
-        if response.status_code in (200, 201):
+        if _is_cpa_success_response(response):
             return True, "上传成功"
 
-        if response.status_code in (404, 405, 415):
+        if response.status_code in _CPA_RAW_JSON_FALLBACK_STATUS_CODES:
             logger.warning("CPA multipart 上传失败，尝试原始 JSON 回退: %s", response.status_code)
             fallback_response = _post_cpa_auth_file_raw_json(
                 upload_url,
@@ -170,7 +178,7 @@ def upload_to_cpa(
                 file_content,
                 effective_token,
             )
-            if fallback_response.status_code in (200, 201):
+            if _is_cpa_success_response(fallback_response):
                 return True, "上传成功"
             response = fallback_response
 

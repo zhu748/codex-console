@@ -2497,6 +2497,13 @@ async function restoreActiveTask() {
         try {
             const data = await api.get(`/registration/tasks/${task_uuid}`);
             if (['completed', 'failed', 'cancelled'].includes(data.status)) {
+                currentTask = data;
+                showTaskStatus(data);
+                updateTaskStatus(data.status);
+                await hydrateTaskLogs(task_uuid);
+                addLog('warning', `[系统] 检测到上次任务已结束，已恢复最后状态 (${task_uuid.substring(0, 8)})`);
+                elements.cancelBtn.disabled = true;
+                elements.startBtn.disabled = false;
                 clearSavedActiveTask();
                 return;
             }
@@ -2525,6 +2532,13 @@ async function restoreActiveTask() {
         try {
             const data = await api.get(endpoint);
             if (data.finished) {
+                currentBatch = { batch_id, ...data, pollingMode: mode };
+                showBatchStatus({ count: total || data.total });
+                updateBatchProgress(data);
+                updateTaskStatus(data.cancelled ? 'cancelled' : 'failed');
+                addLog('warning', `[系统] 检测到上次批量任务已结束，已恢复最后状态 (${batch_id.substring(0, 8)})`);
+                elements.cancelBtn.disabled = true;
+                elements.startBtn.disabled = false;
                 clearSavedActiveTask();
                 return;
             }

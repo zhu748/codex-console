@@ -234,6 +234,7 @@ class DatabaseSessionManager:
             ("bind_card_tasks", "client_secret", "TEXT"),
             ("bind_card_tasks", "bind_mode", "VARCHAR(30) DEFAULT 'semi_auto'"),
             ("bind_card_tasks", "account_email", "VARCHAR(255)"),
+            ("registration_tasks", "batch_id", "VARCHAR(36)"),
         ]
 
         # 确保新表存在（create_tables 已处理，此处兜底）

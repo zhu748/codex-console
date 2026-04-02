@@ -64,6 +64,67 @@ def _cancel_batch_tasks(batch_id: str) -> None:
         add_auto_registration_log(f"[自动注册] 已提交补货批量任务取消请求: {batch_id}")
 
 
+def _load_batch_snapshot_from_db(batch_id: str) -> Optional[dict]:
+    """从数据库重建批量任务快照，支持服务重启后的状态恢复。"""
+    from ...database.models import RegistrationTask as RegistrationTaskModel
+
+    with get_db() as db:
+        tasks = db.query(RegistrationTaskModel).filter(
+            RegistrationTaskModel.batch_id == batch_id
+        ).order_by(RegistrationTaskModel.created_at.asc()).all()
+
+        if not tasks:
+            return None
+
+        total = len(tasks)
+        success = sum(1 for task in tasks if task.status == "completed")
+        failed = sum(1 for task in tasks if task.status == "failed")
+        cancelled = any(task.status == "cancelled" for task in tasks)
+        completed = sum(1 for task in tasks if task.status in {"completed", "failed", "cancelled"})
+        current_index = completed
+        finished = completed >= total
+
+        return {
+            "batch_id": batch_id,
+            "total": total,
+            "completed": completed,
+            "success": success,
+            "failed": failed + sum(1 for task in tasks if task.status == "cancelled"),
+            "current_index": current_index,
+            "cancelled": cancelled,
+            "finished": finished,
+            "progress": f"{completed}/{total}",
+            "task_uuids": [task.task_uuid for task in tasks],
+            "restored": True,
+        }
+
+
+def reconcile_interrupted_registration_tasks() -> None:
+    """应用启动后将服务重启前遗留的运行中任务标记为中断。"""
+    from ...database.models import RegistrationTask as RegistrationTaskModel
+
+    interrupted_message = "服务重启导致任务中断，请重新发起任务"
+
+    with get_db() as db:
+        stale_tasks = db.query(RegistrationTaskModel).filter(
+            RegistrationTaskModel.status.in_(["pending", "running"])
+        ).all()
+
+        if not stale_tasks:
+            return
+
+        for task in stale_tasks:
+            logs = task.logs or ""
+            restart_log = f"[系统] {interrupted_message}"
+            task.status = "failed"
+            task.error_message = interrupted_message
+            task.completed_at = utcnow_naive()
+            task.logs = f"{logs}\n{restart_log}".strip() if logs else restart_log
+
+        db.commit()
+        logger.warning("已回收 %s 个因服务重启中断的注册任务", len(stale_tasks))
+
+
 # ============== Proxy Helper Functions ==============
 
 def get_proxy_for_registration(db) -> Tuple[Optional[str], Optional[int]]:
@@ -1160,6 +1221,7 @@ async def run_auto_registration_batch(plan, settings: Settings) -> str:
                 task_uuid=task_uuid,
                 proxy=proxy,
                 email_service_id=email_service_id,
+                batch_id=batch_id,
             )
             task_uuids.append(task_uuid)
 
@@ -1331,6 +1393,7 @@ async def _start_batch_registration_internal(
                 db,
                 task_uuid=task_uuid,
                 proxy=request.proxy,
+                batch_id=batch_id,
             )
             task_uuids.append(task_uuid)
 
@@ -1587,10 +1650,9 @@ async def start_batch_registration(
 @router.get("/batch/{batch_id}")
 async def get_batch_status(batch_id: str):
     """获取批量任务状态"""
-    if batch_id not in batch_tasks:
+    batch = batch_tasks.get(batch_id) or _load_batch_snapshot_from_db(batch_id)
+    if not batch:
         raise HTTPException(status_code=404, detail="批量任务不存在")
-
-    batch = batch_tasks[batch_id]
     return {
         "batch_id": batch_id,
         "total": batch["total"],
@@ -1621,16 +1683,28 @@ async def get_auto_registration_monitor():
 @router.post("/batch/{batch_id}/cancel")
 async def cancel_batch(batch_id: str):
     """取消批量任务"""
-    if batch_id not in batch_tasks:
+    batch = batch_tasks.get(batch_id) or _load_batch_snapshot_from_db(batch_id)
+    if not batch:
         raise HTTPException(status_code=404, detail="批量任务不存在")
-
-    batch = batch_tasks[batch_id]
     if batch.get("finished"):
         raise HTTPException(status_code=400, detail="批量任务已完成")
 
     batch["cancelled"] = True
     task_manager.cancel_batch(batch_id)
-    _cancel_batch_tasks(batch_id)
+    if batch_id in batch_tasks:
+        _cancel_batch_tasks(batch_id)
+
+    with get_db() as db:
+        for task_uuid in batch.get("task_uuids", []):
+            task_manager.cancel_task(task_uuid)
+            crud.update_registration_task(
+                db,
+                task_uuid,
+                status="cancelled",
+                completed_at=utcnow_naive(),
+                error_message="批量任务取消请求已提交",
+            )
+
     return {"success": True, "message": "批量任务取消请求已提交，正在让它们有序收工"}
 
 
@@ -2133,7 +2207,8 @@ async def run_outlook_batch_registration(
                 db,
                 task_uuid=task_uuid,
                 proxy=proxy,
-                email_service_id=service_id
+                email_service_id=service_id,
+                batch_id=batch_id,
             )
             task_uuids.append(task_uuid)
 
@@ -2180,10 +2255,9 @@ async def start_outlook_batch_registration(
 @router.get("/outlook-batch/{batch_id}")
 async def get_outlook_batch_status(batch_id: str):
     """获取 Outlook 批量任务状态"""
-    if batch_id not in batch_tasks:
+    batch = batch_tasks.get(batch_id) or _load_batch_snapshot_from_db(batch_id)
+    if not batch:
         raise HTTPException(status_code=404, detail="批量任务不存在")
-
-    batch = batch_tasks[batch_id]
     return {
         "batch_id": batch_id,
         "total": batch["total"],
@@ -2202,17 +2276,28 @@ async def get_outlook_batch_status(batch_id: str):
 @router.post("/outlook-batch/{batch_id}/cancel")
 async def cancel_outlook_batch(batch_id: str):
     """取消 Outlook 批量任务"""
-    if batch_id not in batch_tasks:
+    batch = batch_tasks.get(batch_id) or _load_batch_snapshot_from_db(batch_id)
+    if not batch:
         raise HTTPException(status_code=404, detail="批量任务不存在")
-
-    batch = batch_tasks[batch_id]
     if batch.get("finished"):
         raise HTTPException(status_code=400, detail="批量任务已完成")
 
     # 同时更新两个系统的取消状态
     batch["cancelled"] = True
     task_manager.cancel_batch(batch_id)
-    _cancel_batch_tasks(batch_id)
+    if batch_id in batch_tasks:
+        _cancel_batch_tasks(batch_id)
+
+    with get_db() as db:
+        for task_uuid in batch.get("task_uuids", []):
+            task_manager.cancel_task(task_uuid)
+            crud.update_registration_task(
+                db,
+                task_uuid,
+                status="cancelled",
+                completed_at=utcnow_naive(),
+                error_message="批量任务取消请求已提交",
+            )
 
     return {"success": True, "message": "批量任务取消请求已提交，正在让它们有序收工"}
 

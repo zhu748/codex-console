@@ -379,11 +379,13 @@ def create_registration_task(
     db: Session,
     task_uuid: str,
     email_service_id: Optional[int] = None,
-    proxy: Optional[str] = None
+    proxy: Optional[str] = None,
+    batch_id: Optional[str] = None
 ) -> RegistrationTask:
     """创建注册任务"""
     db_task = RegistrationTask(
         task_uuid=task_uuid,
+        batch_id=batch_id,
         email_service_id=email_service_id,
         proxy=proxy,
         status='pending'

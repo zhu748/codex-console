@@ -517,7 +517,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     from ...database.models import EmailService as EmailServiceModel
 
                     db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "cloudmail",
+                        EmailServiceModel.service_type.in_(["cloudmail", "cloud_mail"]),
                         EmailServiceModel.enabled == True
                     ).order_by(EmailServiceModel.priority.asc()).first()
 
@@ -1945,7 +1945,7 @@ async def get_available_email_services():
         result["temp_mail"]["available"] = len(temp_mail_services) > 0
 
         cloudmail_services = db.query(EmailServiceModel).filter(
-            EmailServiceModel.service_type == "cloudmail",
+            EmailServiceModel.service_type.in_(["cloudmail", "cloud_mail"]),
             EmailServiceModel.enabled == True
         ).order_by(EmailServiceModel.priority.asc()).all()
 

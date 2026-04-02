@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def normalize_service_type_value(service_type: Optional[str]) -> Optional[str]:
+    """将历史别名 service_type 归一化为当前项目使用的标准值。"""
+    if service_type is None:
+        return None
+    try:
+        return EmailServiceType(service_type).value
+    except ValueError:
+        return service_type.strip() if isinstance(service_type, str) else service_type
+
+
 # ============== Pydantic Models ==============
 
 class EmailServiceCreate(BaseModel):
@@ -226,8 +236,8 @@ async def get_email_services_stats():
                 stats['freemail_count'] = count
             elif service_type == 'imap_mail':
                 stats['imap_mail_count'] = count
-            elif service_type == 'cloudmail':
-                stats['cloudmail_count'] = count
+            elif service_type in ('cloudmail', 'cloud_mail'):
+                stats['cloudmail_count'] += count
             elif service_type == 'luckmail':
                 stats['luckmail_count'] = count
 
@@ -364,7 +374,11 @@ async def list_email_services(
         query = db.query(EmailServiceModel)
 
         if service_type:
-            query = query.filter(EmailServiceModel.service_type == service_type)
+            normalized_service_type = normalize_service_type_value(service_type)
+            if normalized_service_type == "cloudmail":
+                query = query.filter(EmailServiceModel.service_type.in_(["cloudmail", "cloud_mail"]))
+            else:
+                query = query.filter(EmailServiceModel.service_type == normalized_service_type)
 
         if enabled_only:
             query = query.filter(EmailServiceModel.enabled == True)
@@ -412,8 +426,9 @@ async def get_email_service_full(service_id: int):
 async def create_email_service(request: EmailServiceCreate):
     """创建邮箱服务配置"""
     # 验证服务类型
+    normalized_service_type = normalize_service_type_value(request.service_type)
     try:
-        EmailServiceType(request.service_type)
+        normalized_service_type = EmailServiceType(normalized_service_type).value
     except ValueError:
         raise HTTPException(status_code=400, detail=f"无效的服务类型: {request.service_type}")
 
@@ -424,7 +439,7 @@ async def create_email_service(request: EmailServiceCreate):
             raise HTTPException(status_code=400, detail="服务名称已存在")
 
         service = EmailServiceModel(
-            service_type=request.service_type,
+            service_type=normalized_service_type,
             name=request.name,
             config=normalize_email_service_config(request.service_type, request.config),
             enabled=request.enabled,

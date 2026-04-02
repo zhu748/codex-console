@@ -9,12 +9,16 @@ import time
 import logging
 import random
 import string
-import requests
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..config.constants import OTP_CODE_PATTERN
+
+try:
+    import requests
+except ModuleNotFoundError:  # pragma: no cover - 依赖缺失时回退
+    from curl_cffi import requests
 
 logger = logging.getLogger(__name__)
 

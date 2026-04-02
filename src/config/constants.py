@@ -63,6 +63,18 @@ class EmailServiceType(str, Enum):
     IMAP_MAIL = "imap_mail"
     CLOUDMAIL = "cloudmail"
 
+    @classmethod
+    def _missing_(cls, value):
+        """兼容历史/别名 service_type。"""
+        if isinstance(value, str):
+            alias_map = {
+                "cloud_mail": cls.CLOUDMAIL.value,
+            }
+            canonical = alias_map.get(value.strip().lower())
+            if canonical:
+                return cls(canonical)
+        return None
+
 
 def normalize_account_label(value: str) -> str:
     """标准化账号标签，未知值降级为 none。"""
@@ -112,6 +124,18 @@ def account_label_to_role_tag(account_label: str) -> str:
     if normalized == AccountLabel.CHILD.value:
         return RoleTag.CHILD.value
     return RoleTag.NONE.value
+
+    @classmethod
+    def _missing_(cls, value):
+        """兼容历史/前端别名，统一映射到标准 service_type。"""
+        if isinstance(value, str):
+            alias_map = {
+                "cloudmail": cls.CLOUD_MAIL.value,
+            }
+            canonical = alias_map.get(value.strip().lower())
+            if canonical:
+                return cls(canonical)
+        return None
 
 
 # ============================================================================

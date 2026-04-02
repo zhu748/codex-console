@@ -102,11 +102,11 @@ def normalize_email_service_config(service_type: str, config: Optional[Dict[str,
     """兼容历史配置字段，避免不同入口写入的键名不一致。"""
     normalized = dict(config or {})
 
-    if service_type in {"temp_mail", "cloudmail", "freemail"}:
+    if service_type in {"temp_mail", "cloudmail", "cloud_mail", "freemail"}:
         if normalized.get("default_domain") and not normalized.get("domain"):
             normalized["domain"] = normalized.pop("default_domain")
 
-    if service_type == "cloudmail" and normalized.get("api_key") and not normalized.get("admin_password"):
+    if service_type in {"cloudmail", "cloud_mail"} and normalized.get("api_key") and not normalized.get("admin_password"):
         normalized["admin_password"] = normalized.pop("api_key")
 
     return normalized

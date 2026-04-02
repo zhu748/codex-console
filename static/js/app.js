@@ -55,6 +55,31 @@ let autoMonitorLastLogIndex = 0;
 
 const WS_RECONNECT_BASE_DELAY = 1000;
 const WS_RECONNECT_MAX_DELAY = 10000;
+const ACTIVE_TASK_STORAGE_KEY = 'registrationActiveTask';
+
+function loadSavedActiveTask() {
+    const localValue = localStorage.getItem(ACTIVE_TASK_STORAGE_KEY);
+    if (localValue) return localValue;
+
+    const legacyValue = sessionStorage.getItem('activeTask');
+    if (legacyValue) {
+        localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, legacyValue);
+        sessionStorage.removeItem('activeTask');
+        return legacyValue;
+    }
+
+    return null;
+}
+
+function saveActiveTask(state) {
+    localStorage.setItem(ACTIVE_TASK_STORAGE_KEY, JSON.stringify(state));
+    sessionStorage.removeItem('activeTask');
+}
+
+function clearSavedActiveTask() {
+    localStorage.removeItem(ACTIVE_TASK_STORAGE_KEY);
+    sessionStorage.removeItem('activeTask');
+}
 
 // DOM 元素
 const elements = {
@@ -1143,7 +1168,7 @@ async function handleSaveAutoRegistration() {
     toast.success('自动注册设置已保存');
 
     if (elements.autoRegistrationEnabled.checked) {
-        sessionStorage.setItem('activeTask', JSON.stringify({ mode: 'auto' }));
+        saveActiveTask({ mode: 'auto' });
         autoMonitorLastLogIndex = 0;
         displayedLogs.clear();
         elements.consoleLog.innerHTML = '';
@@ -1151,15 +1176,15 @@ async function handleSaveAutoRegistration() {
         startAutoRegistrationMonitor();
     } else {
         stopAutoRegistrationMonitor();
-        const saved = sessionStorage.getItem('activeTask');
+        const saved = loadSavedActiveTask();
         if (saved) {
             try {
                 const parsed = JSON.parse(saved);
                 if (parsed.mode === 'auto') {
-                    sessionStorage.removeItem('activeTask');
+                    clearSavedActiveTask();
                 }
             } catch {
-                sessionStorage.removeItem('activeTask');
+                clearSavedActiveTask();
             }
         }
         addLog('info', '[系统] 自动注册已禁用');
@@ -1182,7 +1207,7 @@ async function handleSingleRegistration(requestData) {
         currentTask = data;
         activeTaskUuid = data.task_uuid;  // 保存用于重连
         // 持久化到 sessionStorage，跨页面导航后可恢复
-        sessionStorage.setItem('activeTask', JSON.stringify({ task_uuid: data.task_uuid, mode: 'single' }));
+        saveActiveTask({ task_uuid: data.task_uuid, mode: 'single' });
         addLog('info', `[系统] 任务已创建: ${data.task_uuid}`);
         showTaskStatus(data);
         updateTaskStatus('running');
@@ -1448,7 +1473,7 @@ async function handleBatchRegistration(requestData) {
         currentBatch = { ...data, pollingMode: 'batch' };
         activeBatchId = data.batch_id;  // 保存用于重连
         // 持久化到 sessionStorage，跨页面导航后可恢复
-        sessionStorage.setItem('activeTask', JSON.stringify({ batch_id: data.batch_id, mode: 'batch', total: data.count }));
+        saveActiveTask({ batch_id: data.batch_id, mode: 'batch', total: data.count });
         addLog('info', `[系统] 批量任务已创建: ${data.batch_id}`);
         addLog('info', `[系统] 共 ${data.count} 个任务已加入队列`);
         showBatchStatus(data);
@@ -2041,7 +2066,7 @@ function resetButtons() {
     activeBatchId = null;
     // 清除 sessionStorage 持久化状态
     if (!isAutoMode) {
-        sessionStorage.removeItem('activeTask');
+        clearSavedActiveTask();
     }
     // 断开 WebSocket
     disconnectWebSocket();
@@ -2192,7 +2217,7 @@ async function handleOutlookBatchRegistration() {
         currentBatch = { batch_id: data.batch_id, ...data, pollingMode: 'outlook_batch' };
         activeBatchId = data.batch_id;  // 保存用于重连
         // 持久化到 sessionStorage，跨页面导航后可恢复
-        sessionStorage.setItem('activeTask', JSON.stringify({ batch_id: data.batch_id, mode: isOutlookBatchMode ? 'outlook_batch' : 'batch', total: data.to_register }));
+        saveActiveTask({ batch_id: data.batch_id, mode: isOutlookBatchMode ? 'outlook_batch' : 'batch', total: data.to_register });
         addLog('info', `[系统] 批量任务已创建: ${data.batch_id}`);
         addLog('info', `[系统] 总数: ${data.total}, 跳过已注册: ${data.skipped}, 待注册: ${data.to_register}`);
 
@@ -2454,14 +2479,14 @@ function initVisibilityReconnect() {
 
 // 页面加载时恢复进行中的任务（处理跨页面导航后回到注册页的情况）
 async function restoreActiveTask() {
-    const saved = sessionStorage.getItem('activeTask');
+    const saved = loadSavedActiveTask();
     if (!saved) return;
 
     let state;
     try {
         state = JSON.parse(saved);
     } catch {
-        sessionStorage.removeItem('activeTask');
+        clearSavedActiveTask();
         return;
     }
 
@@ -2472,7 +2497,7 @@ async function restoreActiveTask() {
         try {
             const data = await api.get(`/registration/tasks/${task_uuid}`);
             if (['completed', 'failed', 'cancelled'].includes(data.status)) {
-                sessionStorage.removeItem('activeTask');
+                clearSavedActiveTask();
                 return;
             }
             // 任务仍在运行，恢复状态
@@ -2486,10 +2511,11 @@ async function restoreActiveTask() {
             elements.cancelBtn.disabled = false;
             showTaskStatus(data);
             updateTaskStatus(data.status);
+            await hydrateTaskLogs(task_uuid);
             addLog('info', `[系统] 检测到进行中的任务，正在重连监控... (${task_uuid.substring(0, 8)})`);
             connectWebSocket(task_uuid);
         } catch {
-            sessionStorage.removeItem('activeTask');
+            clearSavedActiveTask();
         }
     } else if ((mode === 'batch' || mode === 'outlook_batch') && batch_id) {
         // 查询批量任务是否仍在运行
@@ -2499,7 +2525,7 @@ async function restoreActiveTask() {
         try {
             const data = await api.get(endpoint);
             if (data.finished) {
-                sessionStorage.removeItem('activeTask');
+                clearSavedActiveTask();
                 return;
             }
             // 批量任务仍在运行，恢复状态
@@ -2517,10 +2543,27 @@ async function restoreActiveTask() {
             addLog('info', `[系统] 检测到进行中的批量任务，正在重连监控... (${batch_id.substring(0, 8)})`);
             connectBatchWebSocket(batch_id);
         } catch {
-            sessionStorage.removeItem('activeTask');
+            clearSavedActiveTask();
         }
     } else if (mode === 'auto') {
-        sessionStorage.removeItem('activeTask');
+        clearSavedActiveTask();
+    }
+}
+
+async function hydrateTaskLogs(taskUuid) {
+    try {
+        const data = await api.get(`/registration/tasks/${taskUuid}/logs`);
+        if (data.email) {
+            elements.taskEmail.textContent = data.email;
+        }
+        if (data.email_service) {
+            elements.taskService.textContent = getServiceTypeText(data.email_service);
+        }
+        const logs = data.logs || [];
+        logs.forEach(log => addLog(getLogType(log), log));
+        updateTaskStatus(data.status);
+    } catch (error) {
+        console.error('恢复任务日志失败:', error);
     }
 }
 
